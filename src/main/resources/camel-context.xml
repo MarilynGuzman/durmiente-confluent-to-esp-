@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xmlns:camel="http://camel.apache.org/schema/spring"
+       xmlns:util="http://www.springframework.org/schema/util"
+       xsi:schemaLocation="http://www.springframework.org/schema/beans
+							http://www.springframework.org/schema/beans/spring-beans-4.2.xsd
+							http://camel.apache.org/schema/spring
+							http://camel.apache.org/schema/spring/camel-spring.xsd
+							http://www.springframework.org/schema/util
+							http://www.springframework.org/schema/util/spring-util-4.2.xsd">
+
+    <bean id="eventProcessor" class="com.davivienda.fabricainteracciones.rtdm.durmientes.app.processor.EventProcessor"/>
+    <bean id="sslStart" class="com.davivienda.fabricainteracciones.rtdm.durmientes.app.configurer.StartSSLContext" />
+    <bean id="mailFileProcessor" class="com.davivienda.fabricainteracciones.rtdm.durmientes.app.processor.MailFileProcessor"/>
+
+    <camelContext id="DurmientesConfluentToEspContext" xmlns="http://camel.apache.org/schema/spring">
+        <onException>
+            <exception>com.davivienda.fabricainteracciones.rtdm.durmientes.app.exception.SendEventToESPException</exception>
+            <handled>
+                <constant>true</constant>
+            </handled>
+            <log message="Error en ruta: ${exchange.getUnitOfWork().getRouteContext().getRoute().getId()} | ${exchangeProperty.CamelExceptionCaught.getMessage()}" loggingLevel="ERROR"/>
+        </onException>
+
+        <route id="ROUTE_CONFLUENT_TO_ESP">
+            <from uri="kafka:{{kafka.esp.topicname}}?brokers={{kafka.esp.host}}:{{kafka.esp.port}}&amp;groupId={{kafka.esp.group}}&amp;autoOffsetReset=earliest&amp;breakOnFirstError=true"/>
+            <process ref="eventProcessor"/>
+            <choice>
+                <when>
+                    <simple>${body} != null</simple>
+                    <log message="Enviando a ESP: ${body}" loggingLevel="INFO"/>
+                    <to uri="esp://{{esp.server.host}}:{{esp.server.port}}?project={{esp.node.project}}&amp;contquery={{esp.node.contquery}}&amp;window={{esp.node.window}}&amp;format=map" />
+                </when>
+            </choice>
+            <choice>
+                <when>
+                    <simple>${exchangeProperty.isKafkaAllowed} == true || ${exchangeProperty.privacyLawIsAllowed} == true</simple>
+                    <log message="Caida por encolamiento en Kafka (${exchangeProperty.isKafkaAllowed}) o Ley de Intimidad (${exchangeProperty.privacyLawIsAllowed})" loggingLevel="INFO"/>
+                </when>
+            </choice>
+            <choice>
+                <when>
+                    <simple>${exchangeProperty.InputFrameDiffLenght} != null</simple>
+                    <log message="${exchangeProperty.InputFrameDiffLenghtMessage}"/>
+                </when>
+            </choice>
+        </route>
+
+        <route id="ROUTE_SEQ_NOTIFY_ERROR">
+            <from uri="direct:notifyError"/>
+            <setHeader headerName="MailRecipient">
+                <simple>{{mail.recipient}}</simple>
+            </setHeader>
+            <setHeader headerName="MailSender">
+                <simple>{{mail.sender}}</simple>
+            </setHeader>
+            <process ref="mailFileProcessor"/>
+
+            <choice>
+                <when>
+                    <simple>${body} != null</simple>
+                    <setHeader headerName="MailFolder">
+                        <simple>MAIL_ERR_UPDATE_CONTACTS_${date:now:yyyyMMddHHmmssSSS}</simple>
+                    </setHeader>
+                    <to uri="file:{{mail.folder}}?fileName=/${header.MailFolder}/mail.params"/>
+                    <setBody>
+                        <simple>' '</simple>
+                    </setBody>
+                    <to uri="file:{{mail.folder}}?fileName=/${header.MailFolder}/recibido"/>
+                </when>
+            </choice>
+        </route>
+    </camelContext>
+</beans>
